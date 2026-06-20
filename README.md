@@ -61,6 +61,8 @@ The forward kinematics chain:
 T06 = T01 · T12 · T23 · T34 · T45 · T56
 ```
 
+L1 (ground → J1) is a pure Z translation with no rotation — T01 is a fixed offset matrix, not a joint.
+
 ---
 
 ## Forward Kinematics
@@ -84,7 +86,7 @@ Geometric approach in the vertical plane defined by the target azimuth.
 1. **J1** — direct azimuth: `θ1_servo = arctan2(Y, X)`
 2. **J4 pivot position** — subtract end-effector vector (length L56, angle φ) from target
 3. **J3** — Al-Kashi (law of cosines) on triangle (J2, J3, J4)
-4. **J2** — corrected formula derived from the actual DH convention:
+4. **J2** — formula derived from the actual DH convention (T2_int=0 = arm pointing up):
    ```
    A = L3 + L4·cos(T3_int)
    B = L4·sin(T3_int)
@@ -93,9 +95,28 @@ Geometric approach in the vertical plane defined by the target azimuth.
 5. **J4** — geometric closure: `T4_int = φ - T2_int - T3_int`
 6. FK validation: solution rejected if end-effector error > 1 mm
 
-`ik_auto()` adds automatic φ fallback (±5° steps up to ±180°) and a mirror configuration for targets with negative Y.
+**Fallback strategy — `ik_auto()`:**
+- φ expansion: ±5° steps up to ±180° when direct solution fails
+- Mirror configuration for targets with Y < 0
 
-**Note:** The standard formula `T2 = alpha + beta` (angle from horizontal) gives wrong results with this DH convention — the corrected formula was derived by analyzing the actual DH rotation matrices.
+**Mirror configuration — `ik_miroir()` (original method):**
+
+J1 servo range [0°, 180°] covers azimuth [0°, 180°] — the front half-space (Y ≥ 0).  
+For targets with Y < 0 (behind the robot), the azimuth falls outside this range.
+
+The mirror method solves this by pointing the arm in the opposite direction:
+
+1. Solve IK on the opposite target `(-X, -Y, Z)` — same reach distance R, same height Z
+2. Orient J1 toward the real target: `θ1 = arctan2(-Y, -X)`
+3. Apply symmetry on internal angles J2, J3, J4:
+   ```
+   T2_new = 0° - T2        (symmetry about 0°, median of J2 range [-90°, 90°])
+   T3_new = 0° - T3        (symmetry about 0°, median of J3 range [-90°, 90°])
+   T4_new = 180° - T4      (symmetry about 180°, median of J4 range [0°, 180°])
+   ```
+4. FK validation on the real target
+
+**Note on T2 formula:** The standard textbook formula `T2 = alpha + beta` assumes T2_int=0 corresponds to a horizontal arm. In this DH convention, T2_int=0 means the arm points straight up — so the standard formula produces systematic errors up to 27 mm. The corrected formula above was derived directly from the DH rotation matrices.
 
 ---
 
@@ -148,10 +169,10 @@ Interactive 3D comparison tool built with Matplotlib.
 
 ```
 xarm-ik-explorer/
-├── arm_ik_algebrique.py   # Analytical IK + FK
-├── ik_numerical.py        # Numerical IK (DLS) + FK + Jacobian
-├── visualizer_compare.py         # Interactive 3D visualizer
-├── docs/                  # Technical documentation (in progress)
+├── arm_ik_algebrique.py    # Analytical IK + FK + mirror method
+├── ik_numerical.py         # Numerical IK (DLS) + FK + Jacobian
+├── visualizer_compare.py   # Interactive 3D visualizer
+├── docs/                   # Technical documentation (in progress)
 │   ├── 01_robot_design.pdf
 │   ├── 02_forward_kinematics.pdf
 │   ├── 03_analytical_ik.pdf
@@ -179,7 +200,7 @@ python visualizer_compare.py
 |--------|-----------|-----------|
 | Avg. error (reachable targets) | < 0.05 mm | < 10 mm |
 | Computation time | < 1 ms | 1 – 50 ms |
-| Y < 0 targets | Limited (servo J1 constraint) | Handled |
+| Y < 0 targets | Supported (mirror method) | Supported |
 | Near-singularity behavior | φ fallback | λ damping |
 | Deterministic | Yes | No (random restarts) |
 
@@ -187,16 +208,14 @@ python visualizer_compare.py
 
 ## Limitations
 
-- Analytical IK: targets with Y < 0 require mirror configuration, not always reachable within servo limits
 - Numerical IK: non-deterministic due to random restarts; convergence not guaranteed for all workspace positions
-- φ (wrist pitch) is not user-controlled in the current version — auto-selected by the solver
+- φ (wrist pitch) is auto-selected by the solver — not directly user-controlled in the current version
 
 ---
 
 ## Author
 
 **Donald Riquelme** — Electrical Engineering student, EPAC/UAC, Benin  
-
 [GitHub](https://github.com/doriqu)
 
 ---
