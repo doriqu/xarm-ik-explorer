@@ -9,15 +9,19 @@ Two IK solvers — Analytical (Al-Kashi / geometric) and Numerical (Damped Least
 ![Matplotlib](https://img.shields.io/badge/Matplotlib-3D-green?style=flat-square)
 ![Status](https://img.shields.io/badge/status-active-brightgreen?style=flat-square)
 
+![xarm-ik-explorer visualizer](docs/assets/visualizer_screenshot.png)
+
 ---
 
 ## Context
 
 This project does **not** use the manufacturer's IK library.
 
-Starting from the X-Arm URDF file, I extracted the link lengths and joint parameters manually, built the full DH parameter table, derived both FK and IK solvers from scratch, and implemented an interactive visualizer to compare the two approaches.
+Starting from the X-Arm URDF file, I extracted the link lengths and joint parameters manually, built the full DH parameter table from analysis of the kinematic diagram, derived both FK and IK solvers from scratch, and implemented an interactive visualizer to compare the two approaches.
 
 The goal was to understand the kinematics deeply — not just call an API.
+
+Full technical derivation (with diagrams) is in [`docs/xarm_ik_explorer_report.docx`](docs/xarm_ik_explorer_report.docx).
 
 ---
 
@@ -47,13 +51,14 @@ Joint servo limits:
 
 ## DH Convention
 
-Each joint is described by four DH parameters `(a, d, α, θ)`.  
-The OFFSET array converts servo angles to internal DH angles:
+Each joint is described by four DH parameters `(a, d, α, θ)`, read directly from the kinematic diagram. The OFFSET array converts servo angles to internal DH angles:
 
 ```
-T_internal = servo_rad - OFFSET
-OFFSET = [π/2, π/2, π/2, 0, π/2]
+θ_DH = servo_rad - OFFSET_servo
+OFFSET_servo = [π/2, π/2, π/2, 0, π/2]
 ```
+
+`OFFSET_servo` was determined by physically observing the robot's HOME position: at HOME all internal DH angles equal zero by convention, so `OFFSET_servo` equals the recorded servo values.
 
 The forward kinematics chain:
 
@@ -80,43 +85,60 @@ Output: end-effector position `[X, Y, Z]` in mm + full transformation matrix T06
 
 ### Analytical solver — `arm_ik_algebrique.py`
 
-Geometric approach in the vertical plane defined by the target azimuth.
+Geometric approach in the vertical plane defined by the target azimuth. The derivation works in two coordinate systems:
+
+- **θ'ᵢ** — geometric angles, measured directly on the kinematic diagrams (horizontal/vertical reference)
+- **θᵢ** — internal DH angles, used in the transformation matrices
+
+A second offset, `OFFSET_geo`, converts between them — distinct from `OFFSET_servo` above:
+
+```
+OFFSET_geo = [0, -π/2, 0, +π/2, 0]
+θᵢ = θ'ᵢ - OFFSET_geo[i]
+```
+
+`OFFSET_geo` was derived by comparing the geometric HOME configuration (last link perpendicular to the body, θ'₂ = 90°, θ'₄ = −90°) against the DH HOME convention (θ₂ = θ₃ = θ₄ = 0).
 
 **Key steps:**
-1. **J1** — direct azimuth: `θ1_servo = arctan2(Y, X)`
-2. **J4 pivot position** — subtract end-effector vector (length L56, angle φ) from target
-3. **J3** — Al-Kashi (law of cosines) on triangle (J2, J3, J4)
-4. **J2** — formula derived from the actual DH convention (T2_int=0 = arm pointing up):
+1. **J1** — direct azimuth, no geometric offset: `θ1_servo = arctan2(Y, X)`
+2. **Wrist pivot position** — subtract end-effector vector (length L56, angle φ) from target to locate J4
+3. **J3 (θ'₃)** — Al-Kashi (law of cosines) on triangle (J2, J3, J4); no geometric offset, so `θ3 = θ'3`
+4. **J2 (θ'₂)** — geometric angle from horizontal, decomposed as `θ'2 = α + β`:
    ```
-   A = L3 + L4·cos(T3_int)
-   B = L4·sin(T3_int)
-   T2_int = arctan2(-R_m4, Z_m4) - arctan2(B, A)
+   A = L3 + L4·cos(θ'3)
+   B = L4·sin(θ'3)
+   α = arctan2(Z_m4, R_m4)
+   β = arctan2(B, A)
+   θ'2 = α + β
+   θ2 = θ'2 - π/2          (geometric offset)
    ```
-5. **J4** — geometric closure: `T4_int = φ - T2_int - T3_int`
-6. FK validation: solution rejected if end-effector error > 1 mm
+5. **J4** — geometric closure: `θ'4 = φ - θ'2 - θ'3`, then `θ4 = θ'4 + π/2`
+6. **Servo conversion**: `servo_i = θᵢ + OFFSET_servo[i]`
+7. FK validation: solution rejected if end-effector error > 1 mm
 
 **Fallback strategy — `ik_auto()`:**
 - φ expansion: ±5° steps up to ±180° when direct solution fails
 - Mirror configuration for targets with Y < 0
 
-**Mirror configuration — `ik_miroir()` (original method):**
+**Mirror configuration — `ik_miroir()`:**
 
 J1 servo range [0°, 180°] covers azimuth [0°, 180°] — the front half-space (Y ≥ 0).  
 For targets with Y < 0 (behind the robot), the azimuth falls outside this range.
 
-The mirror method solves this by pointing the arm in the opposite direction:
+The mirror method solves this by orienting the arm toward the opposite vector `(-X, -Y)`:
 
 1. Solve IK on the opposite target `(-X, -Y, Z)` — same reach distance R, same height Z
-2. Orient J1 toward the real target: `θ1 = arctan2(-Y, -X)`
-3. Apply symmetry on internal angles J2, J3, J4:
+2. Orient J1 directly toward the real target: `θ1 = arctan2(-Y, -X)`
+3. Apply symmetry on internal DH angles J2, J3, J4:
    ```
-   T2_new = 0° - T2        (symmetry about 0°, median of J2 range [-90°, 90°])
-   T3_new = 0° - T3        (symmetry about 0°, median of J3 range [-90°, 90°])
-   T4_new = 180° - T4      (symmetry about 180°, median of J4 range [0°, 180°])
+   θ2_mirror = -θ2          (symmetry about 0°, midpoint of J2 DH range)
+   θ3_mirror = -θ3          (symmetry about 0°, midpoint of J3 DH range)
+   θ4_mirror = 180° - θ4    (symmetry about 180°, midpoint of J4 DH range [0°,180°])
+   θ5_mirror = θ5           (unchanged — gripper independent of arm pose)
    ```
 4. FK validation on the real target
 
-**Note on T2 formula:** The standard textbook formula `T2 = alpha + beta` assumes T2_int=0 corresponds to a horizontal arm. In this DH convention, T2_int=0 means the arm points straight up — so the standard formula produces systematic errors up to 27 mm. The corrected formula above was derived directly from the DH rotation matrices.
+**Note on the θ2 formula:** Earlier derivations assumed θ2 (internal DH) was directly equal to `α + β`, which produced systematic errors up to 27 mm. The issue was the geometric offset: in this DH convention, θ2 = 0 corresponds to the arm pointing straight up, not horizontal. Once `θ2 = (α + β) - π/2` was applied, error dropped to < 0.05 mm.
 
 ---
 
@@ -150,7 +172,7 @@ where λ² adapts to manipulability to avoid singularities.
 
 ## Visualizer — `visualizer_compare.py`
 
-Interactive 3D comparison tool built with Matplotlib.
+Interactive 3D comparison tool built with Matplotlib (screenshot above).
 
 **FK mode** — manual joint control via sliders. Both arms follow simultaneously.
 
@@ -162,6 +184,7 @@ Interactive 3D comparison tool built with Matplotlib.
 - PHI indicators (read-only, real wrist angle)
 - Animated motion (25 frames)
 - Dashboard: status, error, computation time, manipulability index, joint angles
+- Debug log: live solver output (convergence, mirror activation, FK error)
 
 ---
 
@@ -169,15 +192,13 @@ Interactive 3D comparison tool built with Matplotlib.
 
 ```
 xarm-ik-explorer/
-├── arm_ik_algebrique.py    # Analytical IK + FK + mirror method
-├── ik_numerical.py         # Numerical IK (DLS) + FK + Jacobian
-├── visualizer_compare.py   # Interactive 3D visualizer
-├── docs/                   # Technical documentation (in progress)
-│   ├── 01_robot_design.pdf
-│   ├── 02_forward_kinematics.pdf
-│   ├── 03_analytical_ik.pdf
-│   ├── 04_numerical_ik.pdf
-│   └── 05_comparison.pdf
+├── arm_ik_algebrique.py          # Analytical IK + FK + mirror method
+├── ik_numerical.py               # Numerical IK (DLS) + FK + Jacobian
+├── visualizer_compare.py         # Interactive 3D visualizer
+├── docs/
+│   ├── xarm_ik_explorer_report.docx   # Full technical report (FK, analytical IK, numerical IK)
+│   └── assets/
+│       └── visualizer_screenshot.png
 └── README.md
 ```
 
@@ -199,7 +220,7 @@ python visualizer_compare.py
 | Metric | Analytical | Numerical |
 |--------|-----------|-----------|
 | Avg. error (reachable targets) | < 0.05 mm | < 10 mm |
-| Computation time | < 1 ms | 1 – 50 ms |
+| Computation time | < 1 ms | 1 – 100 ms |
 | Y < 0 targets | Supported (mirror method) | Supported |
 | Near-singularity behavior | φ fallback | λ damping |
 | Deterministic | Yes | No (random restarts) |
@@ -209,13 +230,14 @@ python visualizer_compare.py
 ## Limitations
 
 - Numerical IK: non-deterministic due to random restarts; convergence not guaranteed for all workspace positions
-- φ (wrist pitch) is auto-selected by the solver — not directly user-controlled in the current version
+- φ (wrist pitch) is auto-selected by the analytical solver — not directly user-controlled in the current version
+- Numerical solver does not target a specific φ — wrist pitch is a free variable determined by the optimizer
 
 ---
 
 ## Author
 
-**Donald Riquelme** — Electrical Engineering student, EPAC/UAC, Benin  
+**Donald R. OKE**  
 [GitHub](https://github.com/doriqu)
 
 ---
