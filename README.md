@@ -21,7 +21,7 @@ Starting from the X-Arm URDF file, I extracted the link lengths and joint parame
 
 The goal was to understand the kinematics deeply — not just call an API.
 
-Full technical derivation (with diagrams) is in [`docs/xarm_ik_explorer_report.docx`](docs/xarm_ik_explorer_report.docx).
+Full technical derivation (with diagrams) is in [`docs/xarm_ik_explorer_report.pdf`](docs/xarm_ik_explorer_report.pdf).
 
 ---
 
@@ -196,7 +196,7 @@ xarm-ik-explorer/
 ├── ik_numerical.py               # Numerical IK (DLS) + FK + Jacobian
 ├── visualizer_compare.py         # Interactive 3D visualizer
 ├── docs/
-│   ├── xarm_ik_explorer_report.docx   # Full technical report (FK, analytical IK, numerical IK)
+│   ├── xarm_ik_explorer_report.pdf   # Full technical report (FK, analytical IK, numerical IK)
 │   └── assets/
 │       └── visualizer_screenshot.png
 └── README.md
